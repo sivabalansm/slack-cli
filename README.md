@@ -1,0 +1,143 @@
+# slack-cli
+
+A zero-dependency Node.js CLI for sending, reading, and searching Slack messages **as your own user** (not a bot).
+
+## Setup
+
+### 1. Create a Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App** → **From scratch**
+2. Name it anything (e.g. "My CLI") and select your workspace
+3. Go to **App Manifest** (under Features) and paste this JSON, then click **Save Changes**:
+
+```json
+{
+  "display_information": { "name": "My CLI" },
+  "features": { "bot_user": { "display_name": "My CLI", "always_online": false } },
+  "oauth_config": {
+    "scopes": {
+      "user": [
+        "chat:write",
+        "channels:history",
+        "channels:read",
+        "channels:write",
+        "groups:history",
+        "groups:read",
+        "groups:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "search:read",
+        "users:read"
+      ],
+      "bot": ["chat:write"]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
+```
+
+4. Go to **Install App** and click **Install to \<workspace\>** → **Allow**
+5. Copy the **User OAuth Token** (`xoxp-...`)
+
+### 2. Configure the Token
+
+Create a `.env` file in this directory:
+
+```
+SLACK_USER_TOKEN=xoxp-your-token-here
+```
+
+Or export it in your shell:
+
+```bash
+export SLACK_USER_TOKEN=xoxp-your-token-here
+```
+
+### 3. Make it Executable
+
+```bash
+chmod +x slack
+```
+
+## Usage
+
+```
+slack send <target> <message>                     Send a message
+slack send <target> <message> -t <ts>             Reply in thread
+slack send <target> <message> -t <ts> --broadcast Reply + broadcast to channel
+slack read <target> [--limit N]                   Read recent messages (default 20)
+slack read <target> -t <ts> [--limit N]           Read thread replies
+slack search <query> [--limit N]                  Search messages
+slack channels [--limit N]                        List channels
+slack users [--limit N]                           List users
+```
+
+### Target Formats
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| `#channel` | `#general` | Channel by name |
+| `@username` | `@siva` | DM by username |
+| `U...` | `U0A9558HDE3` | User by ID (opens DM) |
+| `C...` / `D...` | `C9MGF8UE6` | Channel/DM by ID |
+| bare name | `general` | Auto-detects channel or user |
+
+### Examples
+
+```bash
+# Send a DM
+./slack send @yueran "hey, quick question"
+
+# Send to a channel
+./slack send #general "good morning everyone"
+
+# Read last 10 messages from a DM
+./slack read @yueran --limit 10
+
+# Reply in a thread
+./slack send #general "got it, thanks" -t 1774558996.316679
+
+# Read thread replies
+./slack read #general -t 1774558996.316679
+
+# Search messages
+./slack search "from:@siva after:2026-03-20"
+./slack search "project update in:#general"
+
+# List channels and users
+./slack channels
+./slack users
+```
+
+## Scopes Reference
+
+| Scope | Purpose |
+|-------|---------|
+| `chat:write` | Send messages as your user |
+| `channels:history` | Read public channel messages |
+| `channels:read` | List public channels |
+| `channels:write` | Join/manage public channels |
+| `groups:history` | Read private channel messages |
+| `groups:read` | List private channels |
+| `groups:write` | Join/manage private channels |
+| `im:history` | Read DM messages |
+| `im:read` | List DMs |
+| `im:write` | Open new DMs |
+| `mpim:history` | Read group DM messages |
+| `mpim:read` | List group DMs |
+| `mpim:write` | Open new group DMs |
+| `search:read` | Search messages |
+| `users:read` | List users and resolve usernames |
+
+## Requirements
+
+- Node.js 18+ (uses native `fetch`)
+- No npm dependencies

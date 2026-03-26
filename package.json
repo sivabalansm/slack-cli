@@ -1,0 +1,8 @@
+{
+  "name": "slack-cli",
+  "version": "1.0.0",
+  "description": "Slack CLI tool for sending/reading/searching messages as your user",
+  "bin": {
+    "slack": "./slack"
+  }
+}
