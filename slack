@@ -165,7 +165,12 @@ async function cmdSend(args) {
     }
   }
 
-  const text = msgParts.join(' ');
+  let text = msgParts.join(' ');
+  if (!text && !process.stdin.isTTY) {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    text = Buffer.concat(chunks).toString().trim();
+  }
   if (!text) { console.error('Error: No message text provided.'); return; }
 
   const channelId = await resolveChannel(target);
@@ -265,6 +270,102 @@ async function cmdUsers(args) {
   }
 }
 
+async function cmdDm(args) {
+  let limit = 10;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--limit' || args[i] === '-n') limit = parseInt(args[++i]) || 10;
+  }
+
+  const data = await slackGet('conversations.list', { types: 'im', limit });
+  const dms = data.channels.filter(c => !c.is_archived);
+
+  for (const dm of dms) {
+    try {
+      const hist = await slackGet('conversations.history', { channel: dm.id, limit: 1 });
+      const msg = hist.messages?.[0];
+      if (!msg) continue;
+      const name = dm.user ? await getUserName(dm.user) : 'unknown';
+      const time = fmtTs(msg.ts);
+      const preview = (msg.text || '(no text)').slice(0, 80).replace(/\n/g, ' ');
+      console.log(`  \x1b[1m@${name}\x1b[0m \x1b[90m${time}\x1b[0m`);
+      console.log(`    ${preview}`);
+      console.log();
+    } catch {}
+  }
+}
+
+async function cmdReact(args) {
+  const target = args[0];
+  const ts = args[1];
+  let emoji = args[2];
+  if (!target || !ts || !emoji) {
+    console.error('Usage: slack react <target> <ts> <emoji>');
+    return;
+  }
+  emoji = emoji.replace(/:/g, '');
+  const channelId = await resolveChannel(target);
+  await slackPost('reactions.add', { channel: channelId, timestamp: ts, name: emoji });
+  console.log(`Reacted with :${emoji}: on ${target}`);
+}
+
+async function cmdEdit(args) {
+  const target = args[0];
+  const ts = args[1];
+  if (!target || !ts) {
+    console.error('Usage: slack edit <target> <ts> <new message>');
+    return;
+  }
+  const text = args.slice(2).join(' ');
+  if (!text) { console.error('Error: No message text provided.'); return; }
+  const channelId = await resolveChannel(target);
+  await slackPost('chat.update', { channel: channelId, ts, text });
+  console.log(`Edited message ${ts} in ${target}`);
+}
+
+async function cmdDelete(args) {
+  const target = args[0];
+  const ts = args[1];
+  if (!target || !ts) {
+    console.error('Usage: slack delete <target> <ts>');
+    return;
+  }
+  const channelId = await resolveChannel(target);
+  await slackPost('chat.delete', { channel: channelId, ts });
+  console.log(`Deleted message ${ts} from ${target}`);
+}
+
+async function cmdUpload(args) {
+  const target = args[0];
+  const filePath = args[1];
+  if (!target || !filePath) {
+    console.error('Usage: slack upload <target> <filepath>');
+    return;
+  }
+  const channelId = await resolveChannel(target);
+  const { basename } = require('path');
+  const fileContent = readFileSync(filePath);
+  const filename = basename(filePath);
+
+  // Step 1: Get upload URL
+  const urlData = await slackGet('files.getUploadURLExternal', {
+    filename,
+    length: fileContent.length,
+  });
+
+  // Step 2: Upload the file
+  const form = new FormData();
+  form.append('file', new Blob([fileContent]), filename);
+  await fetch(urlData.upload_url, { method: 'POST', body: form });
+
+  // Step 3: Complete the upload
+  await slackPost('files.completeUploadExternal', {
+    files: [{ id: urlData.file_id, title: filename }],
+    channel_id: channelId,
+  });
+
+  console.log(`Uploaded ${filename} to ${target}`);
+}
+
 // ── Main ───────────────────────────────────────────────────────────
 
 function usage() {
@@ -275,9 +376,15 @@ function usage() {
   slack send <target> <message>                    Send a message
   slack send <target> <message> -t <ts>            Reply in thread
   slack send <target> <message> -t <ts> --broadcast  Reply + broadcast to channel
+  echo "msg" | slack send <target>                 Send from stdin (pipe)
   slack read <target> [--limit N]                  Read recent messages
   slack read <target> -t <ts> [--limit N]          Read thread replies
   slack search <query> [--limit N]                 Search messages
+  slack dm [--limit N]                             List recent DM conversations
+  slack react <target> <ts> <emoji>                Add emoji reaction
+  slack edit <target> <ts> <new message>           Edit a sent message
+  slack delete <target> <ts>                       Delete a sent message
+  slack upload <target> <filepath>                 Upload a file
   slack channels [--limit N]                       List channels
   slack users [--limit N]                          List users
 
@@ -304,7 +411,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   process.exit(0);
 }
 
-const commands = { send: cmdSend, read: cmdRead, search: cmdSearch, channels: cmdChannels, users: cmdUsers };
+const commands = { send: cmdSend, read: cmdRead, search: cmdSearch, dm: cmdDm, react: cmdReact, edit: cmdEdit, delete: cmdDelete, upload: cmdUpload, channels: cmdChannels, users: cmdUsers };
 const handler = commands[cmd];
 
 if (!handler) {

@@ -30,6 +30,8 @@ A zero-dependency Node.js CLI for sending, reading, and searching Slack messages
         "mpim:history",
         "mpim:read",
         "mpim:write",
+        "files:write",
+        "reactions:write",
         "search:read",
         "users:read"
       ],
@@ -73,9 +75,15 @@ chmod +x slack
 slack send <target> <message>                     Send a message
 slack send <target> <message> -t <ts>             Reply in thread
 slack send <target> <message> -t <ts> --broadcast Reply + broadcast to channel
+echo "msg" | slack send <target>                  Send from stdin (pipe)
 slack read <target> [--limit N]                   Read recent messages (default 20)
 slack read <target> -t <ts> [--limit N]           Read thread replies
 slack search <query> [--limit N]                  Search messages
+slack dm [--limit N]                              List recent DM conversations
+slack react <target> <ts> <emoji>                 Add emoji reaction
+slack edit <target> <ts> <new message>            Edit a sent message
+slack delete <target> <ts>                        Delete a sent message
+slack upload <target> <filepath>                  Upload a file
 slack channels [--limit N]                        List channels
 slack users [--limit N]                           List users
 ```
@@ -115,6 +123,25 @@ slack users [--limit N]                           List users
 # List channels and users
 ./slack channels
 ./slack users
+
+# DM inbox — see recent conversations
+./slack dm
+
+# React to a message
+./slack react @siva 1774558996.316679 thumbsup
+
+# Edit a message
+./slack edit @siva 1774558996.316679 "updated text"
+
+# Delete a message
+./slack delete @siva 1774558996.316679
+
+# Upload a file
+./slack upload @siva ./report.pdf
+
+# Pipe from another command
+echo "deploy complete" | ./slack send #deploys
+git log --oneline -5 | ./slack send @siva
 ```
 
 ## Scopes Reference
@@ -134,6 +161,8 @@ slack users [--limit N]                           List users
 | `mpim:history` | Read group DM messages |
 | `mpim:read` | List group DMs |
 | `mpim:write` | Open new group DMs |
+| `files:write` | Upload files |
+| `reactions:write` | Add emoji reactions |
 | `search:read` | Search messages |
 | `users:read` | List users and resolve usernames |
 
