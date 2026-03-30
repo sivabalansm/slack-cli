@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { readFileSync } = require('fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('fs');
 const { join } = require('path');
 
 // Load .env from script directory
@@ -105,6 +105,8 @@ async function resolveChannel(target) {
 async function resolveUser(username) {
   if (/^U[A-Z0-9]+$/.test(username)) return username;
   if (userCache.has(username)) return userCache.get(username);
+
+  const allUsers = [];
   let cursor;
   do {
     const params = { limit: 200 };
@@ -112,10 +114,50 @@ async function resolveUser(username) {
     const data = await slackGet('users.list', params);
     for (const u of data.members) {
       userCache.set(u.name, u.id);
+      allUsers.push(u);
+      // Exact match on username or display name
       if (u.name === username || u.profile?.display_name_normalized === username) return u.id;
     }
     cursor = data.response_metadata?.next_cursor;
   } while (cursor);
+
+  // Fuzzy fallback: case-insensitive matching on name, real_name, display_name
+  const query = username.toLowerCase().replace(/[._-]/g, ' ');
+  const tokens = query.split(/\s+/).filter(Boolean);
+
+  function scoreUser(u) {
+    if (u.deleted || u.is_bot) return 0;
+    const haystack = [u.name, u.real_name, u.profile?.display_name, u.profile?.display_name_normalized]
+      .filter(Boolean).join(' ').toLowerCase().replace(/[._-]/g, ' ');
+    const words = haystack.split(/\s+/);
+    // Each token must match: exact substring > prefix of a word > shared prefix (min 3 chars)
+    let total = 0;
+    for (const t of tokens) {
+      if (haystack.includes(t)) { total += 3; continue; }
+      // Check if token shares a prefix of 3+ chars with any word
+      const best = words.reduce((max, w) => {
+        let i = 0;
+        while (i < t.length && i < w.length && t[i] === w[i]) i++;
+        return Math.max(max, i);
+      }, 0);
+      if (best >= 3) { total += best / t.length; continue; }
+      return 0; // token didn't match at all
+    }
+    return total;
+  }
+
+  const scored = allUsers.map(u => ({ u, score: scoreUser(u) })).filter(s => s.score > 0);
+  scored.sort((a, b) => b.score - a.score);
+
+  if (scored.length === 1 || (scored.length > 1 && scored[0].score > scored[1].score)) return scored[0].u.id;
+  if (scored.length > 1) {
+    const list = scored.slice(0, 5).map(({ u }) => {
+      const display = u.profile?.display_name || u.real_name || '';
+      return `  @${u.name} (${display}) ${u.id}`;
+    }).join('\n');
+    throw new Error(`Multiple users match "${username}":\n${list}\nBe more specific or use a user ID.`);
+  }
+
   throw new Error(`User not found: @${username}`);
 }
 
@@ -131,6 +173,25 @@ async function getUserName(userId) {
   }
 }
 
+// ── File download ─────────────────────────────────────────────────
+
+const SLACK_FILES_DIR = '/tmp/slack-files';
+
+async function downloadFile(file) {
+  if (!existsSync(SLACK_FILES_DIR)) mkdirSync(SLACK_FILES_DIR, { recursive: true });
+  const ext = file.filetype ? `.${file.filetype}` : '';
+  const safeName = (file.name || file.id || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const localPath = join(SLACK_FILES_DIR, `${file.id}_${safeName}`);
+  if (existsSync(localPath)) return localPath;
+  const url = file.url_private_download || file.url_private;
+  if (!url) return null;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  writeFileSync(localPath, buf);
+  return localPath;
+}
+
 // ── Formatters ─────────────────────────────────────────────────────
 
 function fmtTs(ts) {
@@ -143,7 +204,26 @@ async function fmtMessage(msg) {
   const time = fmtTs(msg.ts);
   const thread = msg.thread_ts && msg.thread_ts !== msg.ts ? ` (thread)` : '';
   const replies = msg.reply_count ? ` [${msg.reply_count} replies]` : '';
-  return `\x1b[90m${time}\x1b[0m \x1b[1m${name}\x1b[0m${thread}${replies}\n  ${msg.text || '(no text)'}`;
+  let fileLines = '';
+  if (msg.files && msg.files.length > 0) {
+    for (const file of msg.files) {
+      const type = file.mimetype || 'unknown';
+      const isImage = type.startsWith('image/');
+      if (isImage) {
+        const size = file.size ? ` ${(file.size / 1024).toFixed(1)}KB` : '';
+        const dims = file.original_w && file.original_h ? ` ${file.original_w}x${file.original_h}` : '';
+        fileLines += `\n  \x1b[36m📎 ${file.name || 'file'} (${type}${dims}${size}) [image not downloaded]\x1b[0m`;
+      } else {
+        const localPath = await downloadFile(file);
+        if (localPath) {
+          fileLines += `\n  \x1b[36m📎 ${file.name || 'file'} (${type}) → ${localPath}\x1b[0m`;
+        } else {
+          fileLines += `\n  \x1b[36m📎 ${file.name || 'file'} (${type}) [download unavailable]\x1b[0m`;
+        }
+      }
+    }
+  }
+  return `\x1b[90m${time}\x1b[0m \x1b[1m${name}\x1b[0m${thread}${replies}\n  ${msg.text || '(no text)'}${fileLines}`;
 }
 
 // ── Commands ───────────────────────────────────────────────────────
@@ -257,17 +337,40 @@ async function cmdChannels(args) {
 }
 
 async function cmdUsers(args) {
-  let limit = 50;
+  let limit = 200;
+  const filterParts = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--limit' || args[i] === '-n') limit = parseInt(args[++i]) || 50;
+    if (args[i] === '--limit' || args[i] === '-n') {
+      limit = parseInt(args[++i]) || 200;
+    } else {
+      filterParts.push(args[i]);
+    }
   }
+  const filter = filterParts.join(' ').toLowerCase().replace(/[._-]/g, ' ');
+  const tokens = filter ? filter.split(/\s+/).filter(Boolean) : [];
 
-  const data = await slackGet('users.list', { limit });
-  for (const u of data.members) {
-    if (u.deleted || u.is_bot) continue;
-    const display = u.profile?.display_name || u.real_name || '';
-    console.log(`  \x1b[1m@${u.name}\x1b[0m ${display} \x1b[90m${u.id}\x1b[0m`);
-  }
+  let cursor;
+  do {
+    const params = { limit };
+    if (cursor) params.cursor = cursor;
+    const data = await slackGet('users.list', params);
+    for (const u of data.members) {
+      if (u.deleted || u.is_bot) continue;
+      const display = u.profile?.display_name || u.real_name || '';
+      if (tokens.length) {
+        const haystack = [u.name, u.real_name, u.profile?.display_name, u.profile?.display_name_normalized]
+          .filter(Boolean).join(' ').toLowerCase().replace(/[._-]/g, ' ');
+        const words = haystack.split(/\s+/);
+        const matches = tokens.every(t => {
+          if (haystack.includes(t)) return true;
+          return words.some(w => { let i = 0; while (i < t.length && i < w.length && t[i] === w[i]) i++; return i >= 3; });
+        });
+        if (!matches) continue;
+      }
+      console.log(`  \x1b[1m@${u.name}\x1b[0m ${display} \x1b[90m${u.id}\x1b[0m`);
+    }
+    cursor = data.response_metadata?.next_cursor;
+  } while (cursor);
 }
 
 async function cmdDm(args) {
@@ -334,6 +437,43 @@ async function cmdDelete(args) {
   console.log(`Deleted message ${ts} from ${target}`);
 }
 
+async function cmdGroup(args) {
+  if (args.length < 2) {
+    console.error('Usage: slack group <@user1> <@user2> [...] ["message"]');
+    console.error('Example: slack group @dominic @obada "Hey team!"');
+    return;
+  }
+
+  const users = [];
+  const msgParts = [];
+  let parsingUsers = true;
+
+  for (const arg of args) {
+    if (parsingUsers && (arg.startsWith('@') || /^U[A-Z0-9]+$/.test(arg))) {
+      const userId = await resolveUser(arg.replace(/^@/, ''));
+      users.push(userId);
+    } else {
+      parsingUsers = false;
+      msgParts.push(arg);
+    }
+  }
+
+  if (users.length < 2) {
+    console.error('Error: Need at least 2 users for a group chat.');
+    return;
+  }
+
+  const data = await slackPost('conversations.open', { users: users.join(',') });
+  const channelId = data.channel.id;
+  console.log(`Group chat opened (${channelId})`);
+
+  const text = msgParts.join(' ');
+  if (text) {
+    await slackPost('chat.postMessage', { channel: channelId, text });
+    console.log(`Message sent to group chat.`);
+  }
+}
+
 async function cmdUpload(args) {
   const target = args[0];
   const filePath = args[1];
@@ -381,12 +521,13 @@ function usage() {
   slack read <target> -t <ts> [--limit N]          Read thread replies
   slack search <query> [--limit N]                 Search messages
   slack dm [--limit N]                             List recent DM conversations
+  slack group @user1 @user2 [...] ["msg"]          Create group chat (+ send msg)
   slack react <target> <ts> <emoji>                Add emoji reaction
   slack edit <target> <ts> <new message>           Edit a sent message
   slack delete <target> <ts>                       Delete a sent message
   slack upload <target> <filepath>                 Upload a file
   slack channels [--limit N]                       List channels
-  slack users [--limit N]                          List users
+  slack users [query]                              List/search users
 
 \x1b[1mTarget formats:\x1b[0m
   #channel-name    Channel by name
@@ -411,7 +552,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   process.exit(0);
 }
 
-const commands = { send: cmdSend, read: cmdRead, search: cmdSearch, dm: cmdDm, react: cmdReact, edit: cmdEdit, delete: cmdDelete, upload: cmdUpload, channels: cmdChannels, users: cmdUsers };
+const commands = { send: cmdSend, read: cmdRead, search: cmdSearch, dm: cmdDm, group: cmdGroup, react: cmdReact, edit: cmdEdit, delete: cmdDelete, upload: cmdUpload, channels: cmdChannels, users: cmdUsers };
 const handler = commands[cmd];
 
 if (!handler) {

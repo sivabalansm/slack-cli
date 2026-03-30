@@ -49,6 +49,9 @@ echo "<message>" | ~/sc/slack-cli/slack send <target>
 # List recent DM conversations
 ~/sc/slack-cli/slack dm --limit <N>
 
+# Create a group chat (with optional message)
+~/sc/slack-cli/slack group @user1 @user2 [...] ["message"]
+
 # Add emoji reaction
 ~/sc/slack-cli/slack react <target> <ts> <emoji>
 
@@ -109,6 +112,12 @@ Resolve dynamically when needed using `~/sc/slack-cli/slack users`, but these ar
 1. User says "edit that to say X" — use ts from the last sent message
 2. `~/sc/slack-cli/slack edit <target> <ts> "new text"`
 3. For delete: `~/sc/slack-cli/slack delete <target> <ts>`
+
+### Group Chats
+1. `~/sc/slack-cli/slack group @user1 @user2` — creates/opens a group DM
+2. `~/sc/slack-cli/slack group @user1 @user2 "message"` — creates group DM and sends a message
+3. Works with @usernames or user IDs (U...)
+4. Once created, use the returned channel ID with `read`, `send`, etc.
 
 ### Uploading
 1. `~/sc/slack-cli/slack upload <target> <filepath>`
