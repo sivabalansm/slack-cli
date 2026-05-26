@@ -40,13 +40,30 @@ fi
 
 echo "Installed: $INSTALL_DIR/slack -> $SCRIPT_DIR/slack"
 
-# Setup .env if not present
-if [ ! -f "$SCRIPT_DIR/.env" ]; then
+DEFAULT_ENV="$SCRIPT_DIR/.env"
+PROFILES=""
+for f in "$SCRIPT_DIR"/.env.*; do
+  [ -e "$f" ] || continue
+  case "$(basename "$f")" in
+    .env.example|.env.sample|.env.template|.env.local) ;;
+    *) PROFILES="$PROFILES ${f##*/.env.}" ;;
+  esac
+done
+PROFILES="${PROFILES# }"
+
+if [ -f "$DEFAULT_ENV" ]; then
+  echo "Default profile: loaded from $DEFAULT_ENV"
+fi
+if [ -n "$PROFILES" ]; then
+  echo "Profile files found: $PROFILES (use: slack --profile <name> <command>)"
+fi
+if [ ! -f "$DEFAULT_ENV" ] && [ -z "$PROFILES" ]; then
   echo ""
   echo "No .env file found. Create one with your Slack user token:"
-  echo "  echo 'SLACK_USER_TOKEN=xoxp-your-token' > $SCRIPT_DIR/.env"
-else
-  echo "Token: loaded from $SCRIPT_DIR/.env"
+  echo "  echo 'SLACK_USER_TOKEN=xoxp-your-token' > $DEFAULT_ENV"
+  echo ""
+  echo "Multi-workspace? Copy to .env.<profile> (e.g. .env.personal) and use:"
+  echo "  slack --profile <name> <command>"
 fi
 
 echo ""

@@ -50,7 +50,9 @@ if (flagProfile != null) {
 // Validate profile name BEFORE anything else (security: blocks path traversal,
 // supersedes help and config to prevent surprising filesystem access).
 if (profile != null && !/^[A-Za-z0-9._-]+$/.test(profile)) {
-  console.error(`Error: invalid profile name '${profile}' (from ${profileSource}). Allowed characters: letters, digits, dot, underscore, dash.`);
+  // JSON.stringify escapes control chars (incl. ANSI escapes) so a hostile
+  // profile name like $'\x1b[31mEVIL' can't corrupt the terminal.
+  console.error(`Error: invalid profile name ${JSON.stringify(profile)} (from ${profileSource}). Allowed characters: letters, digits, dot, underscore, dash.`);
   process.exit(1);
 }
 
