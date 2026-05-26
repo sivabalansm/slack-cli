@@ -4,5 +4,8 @@
   "description": "Slack CLI tool for sending/reading/searching messages as your user",
   "bin": {
     "slack": "./slack"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
   }
 }

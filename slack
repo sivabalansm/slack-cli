@@ -1,24 +1,93 @@
 #!/usr/bin/env node
 
-const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } = require('fs');
 const { join } = require('path');
 
-// Load .env from script directory
+// ── Profile resolution ────────────────────────────────────────────
+// --profile <name> | --profile=<name>  (must appear before the subcommand
+// to protect arbitrary-string positionals like `slack search "..."` from
+// having a literal --profile= in their query treated as a flag).
+// Falls back to SLACK_PROFILE env var. Empty string means unset.
+// Last-wins for repeated --profile flags.
+
+function extractGlobalFlags(argv) {
+  let profile = null;
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if (arg === '--profile') {
+      if (i + 1 >= argv.length) {
+        console.error("Error: --profile requires a value");
+        process.exit(1);
+      }
+      profile = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (arg.startsWith('--profile=')) {
+      profile = arg.slice('--profile='.length);
+      i += 1;
+      continue;
+    }
+    // First non-flag token: stop. Everything from here is the subcommand + its args.
+    break;
+  }
+  return { profile, cleaned: argv.slice(i) };
+}
+
+const { profile: flagProfile, cleaned } = extractGlobalFlags(process.argv.slice(2));
+
+let profile = null;
+let profileSource = null;
+if (flagProfile != null) {
+  profile = flagProfile;
+  profileSource = '--profile';
+} else if (process.env.SLACK_PROFILE && process.env.SLACK_PROFILE !== '') {
+  profile = process.env.SLACK_PROFILE;
+  profileSource = 'SLACK_PROFILE';
+}
+
+// Validate profile name BEFORE anything else (security: blocks path traversal,
+// supersedes help and config to prevent surprising filesystem access).
+if (profile != null && !/^[A-Za-z0-9._-]+$/.test(profile)) {
+  console.error(`Error: invalid profile name '${profile}' (from ${profileSource}). Allowed characters: letters, digits, dot, underscore, dash.`);
+  process.exit(1);
+}
+
+const helpFlags = ['help', '--help', '-h'];
+const cmd = cleaned[0];
+const cmdArgs = cleaned.slice(1);
+const isHelp = !cmd || helpFlags.includes(cmd);
+const isConfig = cmd === 'config';
+
+// Resolve env file: profile set → .env.<profile>, else → .env
+const envFileName = profile ? `.env.${profile}` : '.env';
+const envFilePath = join(__dirname, envFileName);
+
+// Load env file with three-branch error policy.
+let envFileLoaded = false;
 try {
-  const envPath = join(__dirname, '.env');
-  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+  const content = readFileSync(envFilePath, 'utf8');
+  for (const line of content.split('\n')) {
     const match = line.match(/^([^#=]+)=(.*)$/);
     if (match && !process.env[match[1].trim()]) process.env[match[1].trim()] = match[2].trim();
   }
-} catch {}
-
-const helpFlags = ['help', '--help', '-h'];
-if (!process.argv[2] || helpFlags.includes(process.argv[2])) {
-  // defer to usage() below — no token needed for help
+  envFileLoaded = true;
+} catch (err) {
+  if (profile && !isHelp && !isConfig) {
+    // Explicit profile + non-diagnostic command: hard error.
+    console.error(`Error: profile '${profile}' not found at ${envFilePath}`);
+    process.exit(1);
+  }
+  if (profile && (isHelp || isConfig)) {
+    // Explicit profile + help/config: warn but continue (config is the diagnostic).
+    console.warn(`Warning: profile '${profile}' not found at ${envFilePath}`);
+  }
+  // No profile + .env missing: silent (preserves prior behavior).
 }
 
 const TOKEN = process.env.SLACK_USER_TOKEN;
-if (!TOKEN && !helpFlags.includes(process.argv[2]) && process.argv[2]) {
+if (!TOKEN && !isHelp && !isConfig) {
   console.error('Error: SLACK_USER_TOKEN environment variable is not set.');
   console.error('Export it: export SLACK_USER_TOKEN=xoxp-...');
   process.exit(1);
@@ -508,11 +577,38 @@ async function cmdUpload(args) {
 
 // ── Main ───────────────────────────────────────────────────────────
 
+async function cmdConfig() {
+  console.log(`profile: ${profile || 'default'}`);
+  console.log(`envFile: ${envFilePath}`);
+  console.log(`envFileLoaded: ${envFileLoaded}`);
+  if (TOKEN) {
+    console.log(`userToken: set`);
+    const preview = TOKEN.length >= 9
+      ? `${TOKEN.slice(0, 5)}...${TOKEN.slice(-4)}`
+      : `***${TOKEN.slice(-Math.min(4, TOKEN.length))}`;
+    console.log(`userTokenPreview: ${preview}`);
+  } else {
+    console.log(`userToken: not set`);
+  }
+  // List discoverable profiles (filter out template/sample/local files).
+  const skip = new Set(['.env.example', '.env.sample', '.env.template', '.env.local']);
+  let profiles = [];
+  try {
+    profiles = readdirSync(__dirname)
+      .filter(f => f.startsWith('.env.') && !skip.has(f))
+      .map(f => f.slice('.env.'.length))
+      .sort();
+  } catch {}
+  console.log(`availableProfiles: ${profiles.length ? profiles.join(', ') : 'none'}`);
+}
+
 function usage() {
   console.log(`
 \x1b[1mslack\x1b[0m - Slack CLI (sends as your user)
 
 \x1b[1mUsage:\x1b[0m
+  slack [--profile <name>] <command> [args...]
+
   slack send <target> <message>                    Send a message
   slack send <target> <message> -t <ts>            Reply in thread
   slack send <target> <message> -t <ts> --broadcast  Reply + broadcast to channel
@@ -528,6 +624,13 @@ function usage() {
   slack upload <target> <filepath>                 Upload a file
   slack channels [--limit N]                       List channels
   slack users [query]                              List/search users
+  slack config                                     Show resolved profile + token preview
+
+\x1b[1mProfiles (multi-workspace):\x1b[0m
+  --profile <name>     Load .env.<name> instead of .env (must precede subcommand)
+  SLACK_PROFILE=<name> Same, via env var. --profile flag wins on conflict.
+  Names must match [A-Za-z0-9._-]+ (no slashes, no path traversal).
+  Shell SLACK_USER_TOKEN env var still wins over any .env.* file.
 
 \x1b[1mTarget formats:\x1b[0m
   #channel-name    Channel by name
@@ -542,17 +645,18 @@ function usage() {
   slack read @yueran --limit 10
   slack read #dev-team -t 1774557814.530749
   slack search "from:@siva after:2026-03-20"
+  slack --profile work channels
+  SLACK_PROFILE=personal slack dm
+  slack config
 `);
 }
 
-const [cmd, ...args] = process.argv.slice(2);
-
-if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
+if (isHelp) {
   usage();
   process.exit(0);
 }
 
-const commands = { send: cmdSend, read: cmdRead, search: cmdSearch, dm: cmdDm, group: cmdGroup, react: cmdReact, edit: cmdEdit, delete: cmdDelete, upload: cmdUpload, channels: cmdChannels, users: cmdUsers };
+const commands = { send: cmdSend, read: cmdRead, search: cmdSearch, dm: cmdDm, group: cmdGroup, react: cmdReact, edit: cmdEdit, delete: cmdDelete, upload: cmdUpload, channels: cmdChannels, users: cmdUsers, config: cmdConfig };
 const handler = commands[cmd];
 
 if (!handler) {
@@ -561,7 +665,7 @@ if (!handler) {
   process.exit(1);
 }
 
-handler(args).catch(err => {
+handler(cmdArgs).catch(err => {
   console.error(`\x1b[31mError:\x1b[0m ${err.message}`);
   process.exit(1);
 });
