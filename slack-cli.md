@@ -20,7 +20,7 @@ You are a Slack messaging assistant. Use the **slack-cli** tool at `~/sc/slack-c
 ~/sc/slack-cli/slack
 ```
 
-The token is stored in `~/sc/slack-cli/.env` and auto-loaded.
+The token is stored in `~/sc/slack-cli/.env` and auto-loaded. For multi-workspace setups, additional tokens live in `~/sc/slack-cli/.env.<profile>` (e.g. `.env.work`, `.env.personal`). Select a profile with `--profile <name>` *before* the subcommand, or via `SLACK_PROFILE=<name>`. Profile names must match `[A-Za-z0-9._-]+`.
 
 ## Commands Reference
 
@@ -69,6 +69,13 @@ echo "<message>" | ~/sc/slack-cli/slack send <target>
 
 # List users
 ~/sc/slack-cli/slack users
+
+# Multi-workspace: use a non-default profile (must come BEFORE the subcommand)
+~/sc/slack-cli/slack --profile <name> <command> [args...]
+SLACK_PROFILE=<name> ~/sc/slack-cli/slack <command> [args...]
+
+# Diagnose which profile/token is loaded (no network call)
+~/sc/slack-cli/slack config
 ```
 
 ## Target Formats
@@ -112,6 +119,12 @@ Resolve dynamically when needed using `~/sc/slack-cli/slack users`, but these ar
 1. User says "edit that to say X" — use ts from the last sent message
 2. `~/sc/slack-cli/slack edit <target> <ts> "new text"`
 3. For delete: `~/sc/slack-cli/slack delete <target> <ts>`
+
+### Profiles (multi-workspace)
+1. The user may have multiple Slack workspaces configured as profiles (`.env.<name>` files alongside `.env`).
+2. If the user mentions a workspace name, pass it as `--profile <name>` BEFORE the subcommand: `~/sc/slack-cli/slack --profile work send #general "deploy done"`. NEVER place `--profile` after the subcommand — for `search`/`send`/`edit`/`react`/`delete` it would be eaten as part of the user-supplied message or query.
+3. To see what profile is currently active and which workspace's token is loaded: `~/sc/slack-cli/slack config` (no network call; safe to run anytime).
+4. If the user is unsure which profile to use, run `slack config` and show them the `availableProfiles:` line.
 
 ### Group Chats
 1. `~/sc/slack-cli/slack group @user1 @user2` — creates/opens a group DM

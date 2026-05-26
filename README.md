@@ -63,7 +63,34 @@ Or export it in your shell:
 export SLACK_USER_TOKEN=xoxp-your-token-here
 ```
 
-### 3. Make it Executable
+### 3. (Optional) Multi-Workspace Profiles
+
+To use the CLI against more than one Slack workspace, create a separate token file per workspace named `.env.<profile>` (the Slack app must be created in *each* workspace — repeat Step 1 there):
+
+```
+.env             # default (used when no profile is selected)
+.env.work        # profile "work"
+.env.personal    # profile "personal"
+```
+
+Then select a profile per command:
+
+```bash
+slack --profile work channels         # uses .env.work
+SLACK_PROFILE=personal slack dm       # uses .env.personal
+slack channels                        # default → .env
+```
+
+**Resolution rules:**
+- `--profile` flag wins over `SLACK_PROFILE` env var.
+- Shell `SLACK_USER_TOKEN` still wins over any `.env*` file.
+- Profile names must match `[A-Za-z0-9._-]+` (no slashes — path traversal is blocked).
+- `--profile` must appear *before* the subcommand (e.g. `slack --profile work send ...`, not `slack send ... --profile work`) to protect arbitrary message/query strings.
+- A missing `.env.<profile>` file errors with a clear message (except for `--help` and `slack config`, which warn instead).
+
+`.gitignore` excludes `.env.*` by default — never commit a token file.
+
+### 4. Make it Executable
 
 ```bash
 chmod +x slack
@@ -86,6 +113,10 @@ slack delete <target> <ts>                        Delete a sent message
 slack upload <target> <filepath>                  Upload a file
 slack channels [--limit N]                        List channels
 slack users [--limit N]                           List users
+slack config                                      Show resolved profile + masked token
+
+slack [--profile <name>] <command> [args...]      Use a non-default profile
+SLACK_PROFILE=<name> slack <command> [args...]    Same, via env var
 ```
 
 ### Target Formats
@@ -170,3 +201,9 @@ git log --oneline -5 | ./slack send @siva
 
 - Node.js 18+ (uses native `fetch`)
 - No npm dependencies
+
+## Tests
+
+```bash
+npm test            # runs node:test against test/profile.test.js (no network)
+```
